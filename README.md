@@ -1,4 +1,4 @@
-# DS18B20 Multi
+# SFM3003 Air Flow
 Component for the C6 Data Logger framework to handle SFM3003 gas flow sensor.
 
 This is a git submodule for use as a child folder of the project components.
