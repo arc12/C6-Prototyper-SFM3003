@@ -56,6 +56,7 @@ esp_err_t sfm_init(){
             }
         }
     }
+    ESP_LOGD(TAG, "SN: %llu", sfm_serial_number);
 
     if (err == ESP_OK) state = SFM_IDLE;
 
@@ -69,22 +70,23 @@ sfm_state sfm_get_state(){
 // compute a temp, passing a pointer to the sequence of 2 temp bytes followed by CRC.
 // returns -FLT_MAX for temp if CRC check fails
 esp_err_t temp_from_bytes(uint8_t *raw, float *temp){
-    ESP_LOGD(TAG, "Temp bytes: 0x%02x%02x, CRC: 0x%02x", raw[0], raw[1], raw[2]);
+    esp_err_t err = ESP_OK;
     crc_sht40_t crc_calculated = crc_sht40_word(raw);
     if (crc_calculated == raw[2]) {
         *temp = (float)(raw[1] + raw[0] * 256) / 200.0;
     } else {
         *temp = -FLT_MAX;
         ESP_LOGE(TAG, "CRC fail for temp. Expected 0x%02x, got 0x%02x", crc_calculated, raw[2]);
-        return ESP_FAIL;
+        err = ESP_FAIL;
     }
-    return ESP_OK;
+    ESP_LOGD(TAG, "Temp bytes: 0x%02x%02x, CRC: 0x%02x. Result: %.2f", raw[0], raw[1], raw[2], *temp);
+    return err;
 }
 
 // compute a flow in SLM, passing a pointer to the sequence of 2 temp bytes followed by CRC.
 // returns -FLT_MAX for temp if CRC check fails
 esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm){
-    ESP_LOGD(TAG, "Flow bytes: 0x%02x%02x, CRC: 0x%02x", raw[0], raw[1], raw[2]);
+    esp_err_t err = ESP_OK;
     crc_sht40_t crc_calculated = crc_sht40_word(raw);
     if (crc_calculated == raw[2]) {
         // first get the signed int which the 2 bytes represent
@@ -94,9 +96,10 @@ esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm){
     } else {
         *flow_slm = -FLT_MAX;
         ESP_LOGE(TAG, "CRC fail for flow. Expected 0x%02x, got 0x%02x", crc_calculated, raw[2]);
-        return ESP_FAIL;
+        err = ESP_FAIL;
     }
-    return ESP_OK;
+    ESP_LOGD(TAG, "Flow bytes: 0x%02x%02x, CRC: 0x%02x. Result: %.2f", raw[0], raw[1], raw[2], *flow_slm);
+    return err;
 }
 
 // computes a flow in metres per second using the calibration equations given in International Journal of Speleology, 53 (1), 63-73
@@ -170,10 +173,8 @@ esp_err_t sfm_to_sleep(){
 
 // use if explicitly put to sleep. default startup mode is idle. includes a delay
 esp_err_t sfm_wake(){
-    // wake-up requires a valid I2C address with the R/W bit low (write). A read ident seems as good as anything
+    // wake-up requires a valid I2C address with the R/W bit low (write).
     //the doc says wakeup should take about 16ms but it also says the sensor should be polled.
-    // uint8_t read_identifier_cmd[2] = {0xE1, 0x02};
-    // i2c_master_transmit(sfm_dev_handle, read_identifier_cmd, 2, 100);  // NB the datasheet says this is NOT acknowledged so ESP-IDF will return an error
     
     uint8_t address_w = (SFM3003_7BIT_ADDR) << 1;
     i2c_operation_job_t i2c_ops[]= {
@@ -184,11 +185,11 @@ esp_err_t sfm_wake(){
     esp_err_t err = i2c_master_execute_defined_operations(sfm_dev_handle, i2c_ops, sizeof(i2c_ops) / sizeof(i2c_operation_job_t), -1);
     ESP_LOGD(TAG, "I2C ops -> %s", esp_err_to_name(err));
 	
-    ets_delay_us(18000);
+    ets_delay_us(18000);  // TODO replace with a poll using i2c_master_probe() and a 20ms timeout.
 
     // ESP_RETURN_ON_ERROR(err, TAG, "SFM wake: %s", esp_err_to_name(err));
     state = SFM_IDLE;
-    return ESP_OK;
+    return ESP_OK;  // TODO remove and make fn void? Alt leaving gives option to put err in without changing interface def
 }
 
 // send start measurement command, reading a temp at the first opportunity and delaying until warmed up if required.
