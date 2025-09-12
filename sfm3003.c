@@ -19,7 +19,7 @@ static sfm_state state = SFM_MISSING;
 uint64_t sfm_serial_number;
 float start_temp;  // temperature read immediately after entering measurement mode.
 
-esp_err_t sfm_init(){
+esp_err_t sfm_init(bool from_sleep){
     #ifdef CONFIG_SFM3003_LOG_LEVEL
     esp_log_level_set(TAG, CONFIG_SFM3003_LOG_LEVEL);
     #else
@@ -34,6 +34,9 @@ esp_err_t sfm_init(){
     i2c_device_config_t dev_cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = SFM3003_7BIT_ADDR, .scl_speed_hz = I2C_MASTER_FREQUENCY};
     esp_err_t err = i2c_master_bus_add_device(sfm_bus_handle, &dev_cfg, &sfm_dev_handle);
     ESP_RETURN_ON_ERROR(err, TAG, "Initialise SFM3003: %s", esp_err_to_name(err));
+
+    // if the SFM had been put to sleep then a wake-up I2C interaction is required before reading the serial number
+    if (from_sleep) sfm_wake();
 
     // read the serial number
     const uint8_t read_identifier_cmd[2] = {0xE1, 0x02};  // command msb, lsb
@@ -127,7 +130,7 @@ esp_err_t sfm_read_oneshot(float *flow_slm, float *temp){
     *flow_slm = -FLT_MAX;
     *temp = -FLT_MAX;
     uint8_t result[3];  // 2 bytes flow + CRC (not getting fresh temp)
-    esp_err_t err = sfm_init();
+    esp_err_t err = sfm_init(false);
     if (err == ESP_OK) {
         // shouldn't happen in well-written main functions
         if (state == SFM_ASLEEP) {
@@ -168,6 +171,7 @@ esp_err_t sfm_to_sleep(){
     
     ESP_RETURN_ON_ERROR(err, TAG, "SFM sleep: %s", esp_err_to_name(err));
     state = SFM_ASLEEP;
+    ESP_LOGD(TAG, "SFM state %u", state);
     return ESP_OK;
 }
 
@@ -189,6 +193,7 @@ esp_err_t sfm_wake(){
 
     // ESP_RETURN_ON_ERROR(err, TAG, "SFM wake: %s", esp_err_to_name(err));
     state = SFM_IDLE;
+    ESP_LOGD(TAG, "SFM state %u (exit from sfm_wake)", state);
     return ESP_OK;  // TODO remove and make fn void? Alt leaving gives option to put err in without changing interface def
 }
 
@@ -208,6 +213,8 @@ esp_err_t sfm_to_measurement(bool with_delay){
     }
     ESP_RETURN_ON_ERROR(err, TAG, "SFM to-measurement: %s", esp_err_to_name(err));
     state = SFM_MEASURING;
+    
+    ESP_LOGD(TAG, "SFM state %u", state);
 
     return err;
 }
@@ -236,5 +243,7 @@ esp_err_t sfm_to_idle(){
     ESP_RETURN_ON_ERROR(err, TAG, "SFM to-idle: %s", esp_err_to_name(err));
     esp_rom_delay_us(500);
     state = SFM_IDLE;
+    
+    ESP_LOGD(TAG, "SFM state %u (exit sfm_to_idle)", state);
     return ESP_OK;
 }

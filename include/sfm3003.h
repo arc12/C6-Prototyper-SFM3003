@@ -7,7 +7,7 @@ extern uint64_t sfm_serial_number;
 
 typedef enum sfm_state_enum {SFM_IDLE, SFM_MEASURING, SFM_ASLEEP, SFM_MISSING} sfm_state;
 
-esp_err_t sfm_init();
+esp_err_t sfm_init(bool from_sleep);
 sfm_state sfm_get_state();
 float compute_flow_mps(float flow_slm);
 esp_err_t sfm_read_oneshot(float *flow_slm, float *temp);
