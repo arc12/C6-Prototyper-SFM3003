@@ -134,7 +134,7 @@ esp_err_t sfm_read_oneshot(float *flow_slm, float *temp){
     if (err == ESP_OK) {
         // shouldn't happen in well-written main functions
         if (state == SFM_ASLEEP) {
-            ESP_LOGW(TAG, "SFM3003 was asleep; waking. This should only happen with sleep hold-off.");
+            ESP_LOGD(TAG, "SFM3003 was asleep; waking. This should only happen with live readings or sleep hold-off.");
             err = sfm_wake();
         }
 
@@ -187,14 +187,14 @@ esp_err_t sfm_wake(){
 		{ .command = I2C_MASTER_CMD_STOP },																							// 3 --> Stop
 	};
     esp_err_t err = i2c_master_execute_defined_operations(sfm_dev_handle, i2c_ops, sizeof(i2c_ops) / sizeof(i2c_operation_job_t), -1);
-    ESP_LOGD(TAG, "I2C ops -> %s", esp_err_to_name(err));
 	
-    ets_delay_us(18000);  // TODO replace with a poll using i2c_master_probe() and a 20ms timeout.
+    ets_delay_us(18000);  // Include delay anyway - it might have worked. TODO replace with a poll using i2c_master_probe() and a 20ms timeout.
 
-    // ESP_RETURN_ON_ERROR(err, TAG, "SFM wake: %s", esp_err_to_name(err));
+    ESP_RETURN_ON_ERROR(err, TAG, "SFM wake I2C ops -> %s", esp_err_to_name(err));
+
     state = SFM_IDLE;
     ESP_LOGD(TAG, "SFM state %u (exit from sfm_wake)", state);
-    return ESP_OK;  // TODO remove and make fn void? Alt leaving gives option to put err in without changing interface def
+    return ESP_OK;
 }
 
 // send start measurement command, reading a temp at the first opportunity and delaying until warmed up if required.
