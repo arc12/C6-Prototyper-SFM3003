@@ -5,8 +5,11 @@
 #include "esp_check.h"
 #include "driver/i2c_master.h"
 #include "c6_prototyper_core.h"
+#include "app_settings.h"
+#include "core_utils.h"
 #include "crc_sht40.h"  // Same CRC as SHT40, so use the routine in core_components
 #include "sfm3003.h"
+#include "sfm3003_config_report.h"
 
 #define SFM3003_7BIT_ADDR 0x2D
 
@@ -18,6 +21,70 @@ i2c_master_dev_handle_t sfm_dev_handle;
 static sfm_state state = SFM_MISSING;
 uint64_t sfm_serial_number;
 float start_temp;  // temperature read immediately after entering measurement mode.
+
+/* Settings */
+// List of storage keys. Max 15 chars
+#define SFM3003_N_SETTINGS 2
+const char* sfm3003_settings_available[SFM3003_N_SETTINGS] = {"SFM_OFFSET_TEMP", "SFM_OFFSET_SLM"};  // zero point corrections for temp and flow in SLM
+// Local variables to match
+float temp_offset, slm_offset;
+// fn to load local variables from NVS or default
+void sfm3003_load_settings(){
+    ESP_LOGD(TAG, "Reading Settings");
+    setting_get_float("SFM_OFFSET_TEMP", &temp_offset, 0.0);
+    setting_get_float("SFM_OFFSET_SLM", &slm_offset, 0.0);
+}
+// fn to get a string version of the local value and the original (aka default) - for web server
+void sfm3003_setting_get_str(const char* key, char* current, char* original){
+    if (strcmp(key, "SFM_OFFSET_TEMP") == 0){
+        snprintf(current, SETTINGS_CO_BUFF_LEN, "%.3f", temp_offset);
+        strcpy(original, "0.0");
+    } else if (strcmp(key, "SFM_OFFSET_SLM") == 0){
+        snprintf(current, SETTINGS_CO_BUFF_LEN, "%.3f", slm_offset);
+        strcpy(original, "0.0");
+    } else {
+        current = NULL;
+        original = NULL;
+    }
+}
+// fn to take string form of setting from webserver and store to local variable and NVS
+esp_err_t sfm3003_setting_store_str(const char* key, char * value){
+    esp_err_t err = ESP_ERR_INVALID_ARG;  // for if no case is matched
+    
+    if (strcmp(key, "SFM_OFFSET_TEMP") == 0){
+        err = setting_store_float(key, value, &temp_offset);
+    } else if (strcmp(key, "SFM_OFFSET_SLM") == 0){
+        err = setting_store_float(key, value, &slm_offset);
+    }
+    return err;
+}
+
+// returns string with raw (no offset)
+esp_err_t sfm3003_calibration_info(char *formatted, size_t buff_size){
+    float raw_temp, raw_slm;    
+    esp_err_t err = sfm_read_oneshot(&raw_slm, &raw_temp, false);  // do not apply offset
+    if (err == ESP_OK) {
+        char str_temp[10], str_slm[10];
+        float_to_string_guarded(str_temp, 10, raw_temp, "%.2f", "NA");
+        float_to_string_guarded(str_slm, 10, raw_slm, "%.2f", "NA");
+        snprintf(formatted, buff_size, "<li>SFM3003 Un-corrected Temp = %sC, Flow = %sslm</li>", str_temp, str_slm);
+    } else {
+        snprintf(formatted, buff_size, "Fatal error reading SFM3003: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "%s", formatted);
+    }
+    return err;
+}
+
+const app_settings_source_t sfm3003_ass = {
+        .source_code="SLM3003",
+        .source_name="SLM3003 Temp and Flow",
+        .settings_available_ptr=sfm3003_settings_available,
+        .n_settings=SFM3003_N_SETTINGS,
+        .settings_get_str_fn=sfm3003_setting_get_str,
+        .settings_store_str_fn=sfm3003_setting_store_str,
+        .calibration_info_fn=sfm3003_calibration_info,
+        .config_report=&sfm3003_config
+    };
 
 esp_err_t sfm_init(bool from_sleep){
     #ifdef CONFIG_SFM3003_LOG_LEVEL
@@ -34,6 +101,9 @@ esp_err_t sfm_init(bool from_sleep){
     i2c_device_config_t dev_cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = SFM3003_7BIT_ADDR, .scl_speed_hz = I2C_MASTER_FREQUENCY};
     esp_err_t err = i2c_master_bus_add_device(sfm_bus_handle, &dev_cfg, &sfm_dev_handle);
     ESP_RETURN_ON_ERROR(err, TAG, "Initialise SFM3003: %s", esp_err_to_name(err));
+
+    // recover offsets
+    sfm3003_load_settings();
 
     // if the SFM had been put to sleep then a wake-up I2C interaction is required before reading the serial number
     if (from_sleep) sfm_wake();
@@ -72,11 +142,12 @@ sfm_state sfm_get_state(){
 
 // compute a temp, passing a pointer to the sequence of 2 temp bytes followed by CRC.
 // returns -FLT_MAX for temp if CRC check fails
-esp_err_t temp_from_bytes(uint8_t *raw, float *temp){
+esp_err_t temp_from_bytes(uint8_t *raw, float *temp, bool apply_offset){
     esp_err_t err = ESP_OK;
     crc_sht40_t crc_calculated = crc_sht40_word(raw);
     if (crc_calculated == raw[2]) {
         *temp = (float)(raw[1] + raw[0] * 256) / 200.0;
+        if (apply_offset) *temp += temp_offset;
     } else {
         *temp = -FLT_MAX;
         ESP_LOGE(TAG, "CRC fail for temp. Expected 0x%02x, got 0x%02x", crc_calculated, raw[2]);
@@ -88,7 +159,7 @@ esp_err_t temp_from_bytes(uint8_t *raw, float *temp){
 
 // compute a flow in SLM, passing a pointer to the sequence of 2 temp bytes followed by CRC.
 // returns -FLT_MAX for temp if CRC check fails
-esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm){
+esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm, bool apply_offset){
     esp_err_t err = ESP_OK;
     crc_sht40_t crc_calculated = crc_sht40_word(raw);
     if (crc_calculated == raw[2]) {
@@ -96,6 +167,7 @@ esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm){
         uint16_t raw_u = raw[1] + raw[0] * 256;
         int16_t raw_s = (signed) raw_u;
         *flow_slm = ((float)(raw_s) + 12288.0) / 120.0;
+        if (apply_offset) *flow_slm += slm_offset;
     } else {
         *flow_slm = -FLT_MAX;
         ESP_LOGE(TAG, "CRC fail for flow. Expected 0x%02x, got 0x%02x", crc_calculated, raw[2]);
@@ -126,7 +198,7 @@ float compute_flow_mps(float flow_slm){
 // waits for about 50 samples to average before reading the flow.
 // The returned temperature is from the earliest point, pre-warm-up, which is about 0.2C below the warmed-up reading
 // The flow is returned as "SLM" as defined by Sensirion - see compute_flow_mps()
-esp_err_t sfm_read_oneshot(float *flow_slm, float *temp){
+esp_err_t sfm_read_oneshot(float *flow_slm, float *temp, bool apply_offset){
     *flow_slm = -FLT_MAX;
     *temp = -FLT_MAX;
     uint8_t result[3];  // 2 bytes flow + CRC (not getting fresh temp)
@@ -145,8 +217,12 @@ esp_err_t sfm_read_oneshot(float *flow_slm, float *temp){
             esp_rom_delay_us(50000);  //50ms is about 100 readings. Exponential smoothing kicks in after 64ms.
             err = i2c_master_receive(sfm_dev_handle, result, 3, 100);
             // i2c_master_execute_defined_operations
-            if (err == ESP_OK) err = flow_from_bytes(&result[0], flow_slm);
-            *temp = start_temp;
+            if (err == ESP_OK) err = flow_from_bytes(&result[0], flow_slm, apply_offset);
+            if (apply_offset) {
+                *temp = start_temp + temp_offset;
+            } else {
+                *temp = start_temp;
+            }
         }
     }
 
@@ -208,7 +284,7 @@ esp_err_t sfm_to_measurement(bool with_delay){
         uint8_t result[6];  // 2 bytes flow + CRC + 2 bytes temp + CRC
         ets_delay_us(12000);
         err = i2c_master_receive(sfm_dev_handle, result, 6, 100);
-        if (err == ESP_OK) err = temp_from_bytes(&result[3], &start_temp);
+        if (err == ESP_OK) err = temp_from_bytes(&result[3], &start_temp, false);  // NB offset not applied; it must be applied when start_temp is used.
         if (with_delay && (err == ESP_OK)) ets_delay_us(18000);  // total warmup of 30ms given in datasheet
     }
     ESP_RETURN_ON_ERROR(err, TAG, "SFM to-measurement: %s", esp_err_to_name(err));
@@ -220,7 +296,7 @@ esp_err_t sfm_to_measurement(bool with_delay){
 }
 
 // takes a reading after waiting wait_us. The returned temp is the latest, NOT the initial value read at sfm_to_measurement()
-esp_err_t sfm_take_reading(uint32_t wait_us, float *flow_slm, float *temp){
+esp_err_t sfm_take_reading(uint32_t wait_us, float *flow_slm, float *temp, bool apply_offset){
     ets_delay_us(wait_us);
     
     uint8_t result[6];  // 2 bytes flow + CRC + 2 bytes temp + CRC
@@ -229,8 +305,8 @@ esp_err_t sfm_take_reading(uint32_t wait_us, float *flow_slm, float *temp){
     *flow_slm = -FLT_MAX;
     *temp = -FLT_MAX;
     if (err == ESP_OK){
-        err = flow_from_bytes(result, flow_slm);
-        if (err == ESP_OK) err = temp_from_bytes(&result[3], temp);
+        err = flow_from_bytes(result, flow_slm, apply_offset);
+        if (err == ESP_OK) err = temp_from_bytes(&result[3], temp, apply_offset);
     }
     return err;
 }

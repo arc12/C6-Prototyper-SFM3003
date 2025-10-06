@@ -10,11 +10,13 @@ typedef enum sfm_state_enum {SFM_IDLE, SFM_MEASURING, SFM_ASLEEP, SFM_MISSING} s
 esp_err_t sfm_init(bool from_sleep);
 sfm_state sfm_get_state();
 float compute_flow_mps(float flow_slm);
-esp_err_t sfm_read_oneshot(float *flow_slm, float *temp);
+esp_err_t sfm_read_oneshot(float *flow_slm, float *temp, bool apply_offset);
 
 esp_err_t sfm_to_sleep();
 esp_err_t sfm_wake();
 esp_err_t sfm_to_measurement(bool with_delay);
-esp_err_t sfm_take_reading(uint32_t wait_us, float *flow_slm, float *temp);
+esp_err_t sfm_take_reading(uint32_t wait_us, float *flow_slm, float *temp, bool apply_offset);
 esp_err_t sfm_to_idle();
+
+extern const app_settings_source_t sfm3003_ass;
 #endif
