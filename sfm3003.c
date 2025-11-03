@@ -116,11 +116,9 @@ const app_settings_source_t sfm3003_ass = {
 };
 
 // LP CORE Specific
-static bool lp_core_loaded = false;
-static bool lp_core_started = false;
 
 static void lp_core_init(void){
-    if (lp_core_loaded) return;
+    if (ulp_loaded_code == 0xADC0) return;
 
     esp_err_t ret = ESP_OK;
 
@@ -128,13 +126,12 @@ static void lp_core_init(void){
     // ESP_ERROR_CHECK(lp_core_uart_init(&uart_cfg));
 
     ret = ulp_lp_core_load_binary(lp_core_main_bin_start, (lp_core_main_bin_end - lp_core_main_bin_start));
-    lp_core_loaded = (ret == ESP_OK);
-    if (lp_core_loaded) ESP_LOGI(TAG, "LP Core load failed: %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) ESP_LOGE(TAG, "LP Core load failed: %s", esp_err_to_name(ret));
 }
 
 // Enables LP Core access to LP I2C peripheral and starts core. MUST be called after the settings are loaded - sleep interval!
 esp_err_t lp_core_start(){
-    if (!lp_core_started) return ESP_OK;
+    if (ulp_is_started == 1) return ESP_OK;  // this variable is set when the LP Core main() executes.
 
     esp_err_t ret = ESP_OK;
 
@@ -151,20 +148,19 @@ esp_err_t lp_core_start(){
             .lp_timer_sleep_duration_us = 1000000UL * lp_interval_s
         };
         ret = ulp_lp_core_run(&cfg);
-        lp_core_started = (ret == ESP_OK);
-        if (lp_core_started) {
+        if (ret == ESP_OK) {
             ESP_LOGD(TAG, "LP core started");
         } else {
             ESP_LOGE(TAG, "LP Core start failed: %s", esp_err_to_name(ret));
-            lp_core_started = false;
         }
     }
+    
     return ret;
 }
 
 // Stops LP Core and switches LP I2C peripheral to HP Core access. Will wait if the LP core is taking a reading (so that the SFM state is "sleeping")
 void lp_core_stop(){
-    if (!lp_core_started) return;
+    if (ulp_is_started == 0) return;
 
     // wait if the LP core is sampling
     while (ulp_working_flag) {
@@ -174,7 +170,7 @@ void lp_core_stop(){
     // TODO I2C peripheral switch
 
     ulp_lp_core_stop();
-    lp_core_started = false;
+    ulp_is_started = 0;
     state = SFM_ASLEEP;
 }
 
@@ -214,6 +210,7 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
 
     *temp_mean = temp_sum / lp_set_size;
     *flow_slm_mean = flow_slm_sum / lp_set_size;
+    ulp_buffer_valid = 0;  // prevent used readings being re-used
 
     return ESP_OK;
 }
@@ -231,7 +228,8 @@ esp_err_t sfm_init(bool use_lp_core, bool from_sleep){
 
     esp_err_t err = ESP_OK;
 
-    if (use_lp_core){  // if either has error then it is already logged and state booleans set to false
+    if (use_lp_core){
+        // if either has error then it is already logged and state booleans set to false. Both guard against previous init or start.
         lp_core_init();
         lp_core_start();
 
@@ -386,6 +384,7 @@ TAKE CARE to respect the device state when it is measuring or asleep. There is n
 */
 // TODO consider adding automatic state modification
 
+// MUST be in idle mode before attempting sleep
 esp_err_t sfm_to_sleep(){
     uint8_t cmd[2] = {0x36, 0x77};  // 0x3677
     esp_err_t err = i2c_master_transmit(sfm_dev_handle, cmd, 2, 100);  // 100ms timeout
