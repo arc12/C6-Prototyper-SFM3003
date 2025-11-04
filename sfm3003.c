@@ -16,6 +16,7 @@
 #include "ulp_lp_core.h"
 #include "lp_core_i2c.h"
 #include "lp_core_sfm.h"
+#include "esp_sleep.h"
 
 #define SFM3003_7BIT_ADDR 0x2D
 
@@ -38,7 +39,7 @@ esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm, bool apply_offset);
 #define SFM3003_N_SETTINGS 4
 const char* sfm3003_settings_available[SFM3003_N_SETTINGS] = {
     "SFM_OFFSET_TEMP", "SFM_OFFSET_SLM",  // offsets
-    "SFM_LP_INTERVAL_S", "SFM_LP_SET_SIZE"};  // applicable if LP Core sampling initiated by parent app
+    "SFM_LP_PRD_S", "SFM_LP_SET_SIZE"};  // applicable if LP Core sampling initiated by parent app. set size should be 1 less than max possible samples in logging interval
 // Local variables to match
 float temp_offset, slm_offset;  // zero point corrections for temp and flow in SLM
 uint32_t lp_interval_s;  // interval for LP core to take temp and flow readings
@@ -49,7 +50,7 @@ void sfm3003_load_settings(){
     ESP_LOGD(TAG, "Reading Settings");
     setting_get_float("SFM_OFFSET_TEMP", &temp_offset, 0.0);
     setting_get_float("SFM_OFFSET_SLM", &slm_offset, 0.0);
-    setting_get_uint32("SFM_LP_INTERVAL_S", &lp_interval_s, 30);
+    setting_get_uint32("SFM_LP_PRD_S", &lp_interval_s, 30);
     setting_get_uint16("SFM_LP_SET_SIZE", &lp_set_size, 5);
 }
 
@@ -61,7 +62,7 @@ void sfm3003_setting_get_str(const char* key, char* current, char* original){
     } else if (strcmp(key, "SFM_OFFSET_SLM") == 0){
         snprintf(current, SETTINGS_CO_BUFF_LEN, "%.3f", slm_offset);
         strcpy(original, "0.0");
-    } else if (strcmp(key, "SFM_LP_INTERVAL_S") == 0){
+    } else if (strcmp(key, "SFM_LP_PRD_S") == 0){
         snprintf(current, SETTINGS_CO_BUFF_LEN, "%lu", lp_interval_s);
         strcpy(original, "30");
     } else if (strcmp(key, "SFM_LP_SET_SIZE") == 0){
@@ -80,7 +81,7 @@ esp_err_t sfm3003_setting_store_str(const char* key, char * value){
         err = setting_store_float(key, value, &temp_offset);
     } else if (strcmp(key, "SFM_OFFSET_SLM") == 0){
         err = setting_store_float(key, value, &slm_offset);
-    } else if (strcmp(key, "SFM_LP_INTERVAL_S") == 0){
+    } else if (strcmp(key, "SFM_LP_PRD_S") == 0){
         err = setting_store_uint32(key, value, &lp_interval_s);
     } else if (strcmp(key, "SFM_LP_SET_SIZE") == 0){
         err = setting_store_uint16(key, value, &lp_set_size);
@@ -118,56 +119,93 @@ const app_settings_source_t sfm3003_ass = {
 // LP CORE Specific
 
 static void lp_core_init(void){
-    if (ulp_loaded_code == 0xADC0) return;
+    ESP_LOGD(TAG, "Loading LP Core");
 
-    esp_err_t ret = ESP_OK;
+    esp_err_t err = ESP_OK;
 
     // lp_core_uart_cfg_t uart_cfg = LP_CORE_UART_DEFAULT_CONFIG();
     // ESP_ERROR_CHECK(lp_core_uart_init(&uart_cfg));
 
-    ret = ulp_lp_core_load_binary(lp_core_main_bin_start, (lp_core_main_bin_end - lp_core_main_bin_start));
-    if (ret != ESP_OK) ESP_LOGE(TAG, "LP Core load failed: %s", esp_err_to_name(ret));
+    err = ulp_lp_core_load_binary(lp_core_main_bin_start, (lp_core_main_bin_end - lp_core_main_bin_start));
+    if (err != ESP_OK) ESP_LOGE(TAG, "LP Core load failed: %s", esp_err_to_name(err));
 }
 
 // Enables LP Core access to LP I2C peripheral and starts core. MUST be called after the settings are loaded - sleep interval!
-esp_err_t lp_core_start(){
-    if (ulp_is_started == 1) return ESP_OK;  // this variable is set when the LP Core main() executes.
+esp_err_t lp_core_start(bool force_restart){
+    
+    esp_err_t err = esp_sleep_enable_ulp_wakeup();  // needed even if started, so that the LP core is awoken
+    if (err != ESP_OK){
+        ESP_LOGE(TAG, "Failed to enable LP Core wakeup.");
+        return err;
+    }
 
-    esp_err_t ret = ESP_OK;
+    if (force_restart){
+       ESP_LOGD(TAG, "Forced restart of LP Core");
+    } else {
+        if (ulp_is_started == 1){
+            ESP_LOGD(TAG, "LP Core already started");
+            return ESP_OK;  // this variable is set when the LP Core main() executes.
+        } else {
+            ESP_LOGD(TAG, "Starting LP Core");
+        }
+    }
 
     /* Initialize LP I2C with default configuration */
     const lp_core_i2c_cfg_t i2c_cfg = LP_CORE_I2C_DEFAULT_CONFIG();
-    ret = lp_core_i2c_master_init(LP_I2C_NUM_0, &i2c_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "LP I2C init failed: %s", esp_err_to_name(ret));
+    err = lp_core_i2c_master_init(LP_I2C_NUM_0, &i2c_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LP I2C init failed: %s", esp_err_to_name(err));
+        return err;
     } else {
         ESP_LOGD(TAG, "LP I2C initialized successfully");
-        
-        ulp_lp_core_cfg_t cfg = {
-            .wakeup_source = ULP_LP_CORE_WAKEUP_SOURCE_LP_TIMER,
-            .lp_timer_sleep_duration_us = 1000000UL * lp_interval_s
-        };
-        ret = ulp_lp_core_run(&cfg);
-        if (ret == ESP_OK) {
-            ESP_LOGD(TAG, "LP core started");
-        } else {
-            ESP_LOGE(TAG, "LP Core start failed: %s", esp_err_to_name(ret));
-        }
+    }
+
+    ulp_lp_core_cfg_t cfg = {
+        .wakeup_source = ULP_LP_CORE_WAKEUP_SOURCE_LP_TIMER,
+        .lp_timer_sleep_duration_us = 1000000UL * lp_interval_s
+    };
+    err = ulp_lp_core_run(&cfg);
+    if (err == ESP_OK) {
+        ESP_LOGD(TAG, "LP core started");
+    } else {
+        ESP_LOGE(TAG, "LP Core start failed: %s", esp_err_to_name(err));
     }
     
-    return ret;
+    return err;
+}
+
+// wait if the LP core is sampling
+bool lp_core_wait(){
+    
+    uint8_t loops = 50;
+    #define MAX_LP_WAIT_LOOPS 50
+    while (ulp_working_flag && (--loops > 0)) {
+        vTaskDelay(1);
+    }
+    if (loops == 0){
+        ESP_LOGW(TAG, "Timed out waiting for LP Core to finish sampling in lp_core_stop().");
+        return false;
+    }
+    return true;
 }
 
 // Stops LP Core and switches LP I2C peripheral to HP Core access. Will wait if the LP core is taking a reading (so that the SFM state is "sleeping")
 void lp_core_stop(){
-    if (ulp_is_started == 0) return;
-
-    // wait if the LP core is sampling
-    while (ulp_working_flag) {
-        vTaskDelay(1);
+    if (ulp_is_started == 0){
+        ESP_LOGD(TAG, "LP Core already stopped");
+        return;
+    } else {
+        ESP_LOGD(TAG, "Stopping LP Core and switching I2C to HP");
     }
 
-    // TODO I2C peripheral switch
+    lp_core_wait();
+
+    // I2C peripheral switch 
+    sfm_bus_handle = setup_i2c_bus(LPI2C);
+    if (sfm_bus_handle == NULL) return;
+    i2c_device_config_t dev_cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = SFM3003_7BIT_ADDR, .scl_speed_hz = I2C_MASTER_FREQUENCY};
+    esp_err_t err = i2c_master_bus_add_device(sfm_bus_handle, &dev_cfg, &sfm_dev_handle);
+    ESP_RETURN_VOID_ON_ERROR(err, TAG, "Switch SFM3003 I2C to HP: %s", esp_err_to_name(err));
 
     ulp_lp_core_stop();
     ulp_is_started = 0;
@@ -177,9 +215,14 @@ void lp_core_stop(){
 // Read un-read raw values in the LP Core SFM buffer, convert to real values and take mean.  SFM_LP_SET_SIZE setting controls number of samples to take mean over.
 // In the event that there are not enough un-read entries in the buffer, or if any are invalid the returned mean value will be set to the "NA" placeholder: FLOAT_NA
 esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
+
     // failure case fallbacks only over-written if all OK
     *temp_mean = FLOAT_NA;
     *flow_slm_mean = FLOAT_NA;
+
+    ESP_LOGD(TAG, "Computing record from LP Core buffer. (buffer_ix = %lu, buffer_valid = %lu)", ulp_buffer_ix, ulp_buffer_valid);
+
+    if (ulp_last_err != ESP_OK) ESP_LOGE(TAG, "LP Core last error: %s (@ step %u)", esp_err_to_name(ulp_last_err), ulp_err_step);
 
     if (ulp_buffer_valid < lp_set_size) {
         ESP_LOGW(TAG, "Insufficient samples in LP Core buffer to compute mean temp & flow. Had %u, needed %u", ulp_buffer_valid, lp_set_size);
@@ -190,16 +233,15 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
     float temp_item, flow_slm_item;
     float temp_sum = 0;
     float flow_slm_sum = 0;
-    // LP Core variables always 32 bit but casting needd so modulo arithmetic works as expected
-    uint8_t last_buffer_ix = (uint8_t) ulp_buffer_ix;
-    uint8_t buffer_valid = (uint8_t) ulp_buffer_valid; 
-    for (uint8_t i = 1; i <= buffer_valid; i++){
-        uint8_t ix = (last_buffer_ix - i) % CONFIG_SFM_LP_BUFF_LEN;
+    // LP Core variables always 32 bit so casting needed
+    for (uint8_t i = 1; i <= lp_set_size; i++){
+        // funky casting of index is needed so modulo works as expected. ix is 16 bit to allow for long buffer
+        uint16_t ix = ((uint16_t)(ulp_buffer_ix - i)) % CONFIG_SFM_LP_BUFF_LEN;
         // need to cast
         uint8_t temp_bytes[3], flow_slm_bytes[3];
-        for (uint8_t i = 0; i < 3; i++){
-            flow_slm_bytes[i] = (uint8_t) ulp_raw_buffer[ix * 6 + i];
-            temp_bytes[i] = (uint8_t) ulp_raw_buffer[ix * 6 + 3 + i];
+        for (uint8_t j = 0; j < 3; j++){
+            flow_slm_bytes[j] = (uint8_t) ulp_raw_buffer[ix * 6 + j];
+            temp_bytes[j] = (uint8_t) ulp_raw_buffer[ix * 6 + 3 + j];
         }
         err = temp_from_bytes(temp_bytes, &temp_item, true);
         if (err == ESP_OK) err = flow_from_bytes(flow_slm_bytes, &flow_slm_item, true);
@@ -212,14 +254,42 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
     *flow_slm_mean = flow_slm_sum / lp_set_size;
     ulp_buffer_valid = 0;  // prevent used readings being re-used
 
+    ESP_LOGD(TAG, "Means: %.2fslm, %.2fC", *flow_slm_mean, *temp_mean);
+
     return ESP_OK;
 }
 
 // HP CORE
+esp_err_t read_serial(){
+    // read the serial number
+    const uint8_t read_identifier_cmd[2] = {0xE1, 0x02};  // command msb, lsb
+    esp_err_t err = i2c_master_transmit(sfm_dev_handle, read_identifier_cmd, 2, 100);  // 100ms timeout
+    if (err == ESP_OK) {
+        uint8_t result[18];  // (2 bytes + CRC) * 6 for product ident + SN
+        err = i2c_master_receive(sfm_dev_handle, result, 18, 100);
+        if (err == ESP_OK) {
+            // check all CRCs for the serial number part
+            sfm_serial_number = 0;
+            for (uint8_t i=6; i<=16; i+=3){
+                crc_sht40_t crc_computed = crc_sht40_word(&result[i]);
+                if (crc_computed != result[i+2]){
+                    err = ESP_FAIL;
+                    ESP_LOGE(TAG, "CRC fail for SFM SN. Expected 0x%02x, got 0x%02x", crc_computed, result[i+2]);
+                    sfm_serial_number = 0;
+                    break;
+                }
+                sfm_serial_number = (sfm_serial_number << 16) + (result[i] << 8) + result[i+1];
+            }
+        }
+    }
+    ESP_LOGD(TAG, "SN: %llu", sfm_serial_number);
+    return err;
+}
 
 // use_lp_core param determines whether LP Core is loaded and given default control of the LP I2C peripheral.
-// from_sleep param refers to SFM state, and only applies when LP Core is not active
-esp_err_t sfm_init(bool use_lp_core, bool from_sleep){
+// from_sleep param refers to SFM state, and only applies when LP Core is not active#
+// wake cause is HP core startup type, 0 if not a wake (e.g. POR)
+esp_err_t sfm_init(bool use_lp_core, bool from_sleep, int wake_cause){
     #ifdef CONFIG_SFM3003_LOG_LEVEL
     esp_log_level_set(TAG, CONFIG_SFM3003_LOG_LEVEL);
     #else
@@ -228,10 +298,13 @@ esp_err_t sfm_init(bool use_lp_core, bool from_sleep){
 
     esp_err_t err = ESP_OK;
 
+    // recover offsets and LP core settings
+    sfm3003_load_settings();
+
     if (use_lp_core){
         // if either has error then it is already logged and state booleans set to false. Both guard against previous init or start.
-        lp_core_init();
-        lp_core_start();
+        if (wake_cause == 0) lp_core_init();
+        lp_core_start(false);
 
     } else {
 
@@ -242,36 +315,12 @@ esp_err_t sfm_init(bool use_lp_core, bool from_sleep){
         
         i2c_device_config_t dev_cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = SFM3003_7BIT_ADDR, .scl_speed_hz = I2C_MASTER_FREQUENCY};
         err = i2c_master_bus_add_device(sfm_bus_handle, &dev_cfg, &sfm_dev_handle);
-        ESP_RETURN_ON_ERROR(err, TAG, "Initialise SFM3003: %s", esp_err_to_name(err));
-
-        // recover offsets
-        sfm3003_load_settings();
+        ESP_RETURN_ON_ERROR(err, TAG, "Initialise SFM3003 I2C: %s", esp_err_to_name(err));
 
         // if the SFM had been put to sleep then a wake-up I2C interaction is required before reading the serial number
         if (from_sleep) sfm_wake();
 
-        // read the serial number
-        const uint8_t read_identifier_cmd[2] = {0xE1, 0x02};  // command msb, lsb
-        err = i2c_master_transmit(sfm_dev_handle, read_identifier_cmd, 2, 100);  // 100ms timeout
-        if (err == ESP_OK) {
-            uint8_t result[18];  // (2 bytes + CRC) * 6 for product ident + SN
-            err = i2c_master_receive(sfm_dev_handle, result, 18, 100);
-            if (err == ESP_OK) {
-                // check all CRCs for the serial number part
-                sfm_serial_number = 0;
-                for (uint8_t i=6; i<=16; i+=3){
-                    crc_sht40_t crc_computed = crc_sht40_word(&result[i]);
-                    if (crc_computed != result[i+2]){
-                        err = ESP_FAIL;
-                        ESP_LOGE(TAG, "CRC fail for SFM SN. Expected 0x%02x, got 0x%02x", crc_computed, result[i+2]);
-                        sfm_serial_number = 0;
-                        break;
-                    }
-                    sfm_serial_number = (sfm_serial_number << 16) + (result[i] << 8) + result[i+1];
-                }
-            }
-        }
-        ESP_LOGD(TAG, "SN: %llu", sfm_serial_number);
+        err = read_serial();
 
         if (err == ESP_OK) state = SFM_IDLE;
     }
@@ -345,13 +394,16 @@ esp_err_t sfm_read_oneshot(float *flow_slm, float *temp, bool apply_offset){
     *flow_slm = FLOAT_NA;
     *temp = FLOAT_NA;
     uint8_t result[3];  // 2 bytes flow + CRC (not getting fresh temp)
-    esp_err_t err = sfm_init(false, false);
+    esp_err_t err = sfm_init(false, false, -1);  // last arg ignored as 1st one is false
     if (err == ESP_OK) {
         // shouldn't happen in well-written main functions
         if (state == SFM_ASLEEP) {
             ESP_LOGD(TAG, "SFM3003 was asleep; waking. This should only happen with live readings or sleep hold-off.");
             err = sfm_wake();
         }
+
+        // Only relevant when LP Core used and this fn is used interactively
+        if (sfm_serial_number == 0) read_serial();
 
         if (err == ESP_OK) err = sfm_to_measurement(true);
         if (err == ESP_OK){
@@ -382,7 +434,7 @@ These commands are not for normal logging use, which should use read_sfm_oneshot
 They are intended for testing and setup.
 TAKE CARE to respect the device state when it is measuring or asleep. There is no automatic setup or state modification at present.
 */
-// TODO consider adding automatic state modification
+// TODO consider adding automatic state modification (what did I mean? check state = SFM_IDLE and if not call idle fn?)
 
 // MUST be in idle mode before attempting sleep
 esp_err_t sfm_to_sleep(){

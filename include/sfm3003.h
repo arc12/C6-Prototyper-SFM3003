@@ -8,11 +8,11 @@ extern uint64_t sfm_serial_number;
 
 typedef enum sfm_state_enum {SFM_IDLE, SFM_MEASURING, SFM_ASLEEP, SFM_MISSING} sfm_state;
 
-esp_err_t lp_core_start();
+esp_err_t lp_core_start(bool force_restart);
 void lp_core_stop();
 esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean);
 
-esp_err_t sfm_init(bool use_lp_core, bool from_sleep);
+esp_err_t sfm_init(bool use_lp_core, bool from_sleep, int wake_cause);
 sfm_state sfm_get_state();
 float compute_flow_mps(float flow_slm);
 esp_err_t sfm_read_oneshot(float *flow_slm, float *temp, bool apply_offset);
