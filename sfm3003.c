@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "float.h"
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "rom/ets_sys.h"
 #include "esp_log.h"
@@ -214,7 +215,7 @@ void lp_core_stop(){
 
 // Read un-read raw values in the LP Core SFM buffer, convert to real values and take mean.  SFM_LP_SET_SIZE setting controls number of samples to take mean over.
 // In the event that there are not enough un-read entries in the buffer, or if any are invalid the returned mean value will be set to the "NA" placeholder: FLOAT_NA
-esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
+esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean, float *flow_slm_sd){
 
     // failure case fallbacks only over-written if all OK
     *temp_mean = FLOAT_NA;
@@ -233,6 +234,8 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
     float temp_item, flow_slm_item;
     float temp_sum = 0;
     float flow_slm_sum = 0;
+    float flow_slm_array[lp_set_size];
+    float flow_slm_dev_sum = 0;
     // LP Core variables always 32 bit so casting needed
     for (uint8_t i = 1; i <= lp_set_size; i++){
         // funky casting of index is needed so modulo works as expected. ix is 16 bit to allow for long buffer
@@ -248,13 +251,18 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean){
         if (err != ESP_OK) return ESP_FAIL;  // conversion functions will have logged CRC fails
         temp_sum += temp_item;
         flow_slm_sum += flow_slm_item;
+        flow_slm_array[i-1] = flow_slm_item;
     }
 
     *temp_mean = temp_sum / lp_set_size;
     *flow_slm_mean = flow_slm_sum / lp_set_size;
+    for (uint8_t i = 0; i < lp_set_size; i++){
+        flow_slm_dev_sum += pow(*flow_slm_mean - flow_slm_array[i], 2);
+    }
+    *flow_slm_sd = sqrt(flow_slm_dev_sum / lp_set_size);
     ulp_buffer_valid = 0;  // prevent used readings being re-used
 
-    ESP_LOGD(TAG, "Means: %.2fslm, %.2fC", *flow_slm_mean, *temp_mean);
+    ESP_LOGD(TAG, "Means: %.2fslm, %.2fC, SD: %.2fslm", *flow_slm_mean, *temp_mean, *flow_slm_sd);
 
     return ESP_OK;
 }

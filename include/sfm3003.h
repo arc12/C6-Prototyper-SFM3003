@@ -10,7 +10,7 @@ typedef enum sfm_state_enum {SFM_IDLE, SFM_MEASURING, SFM_ASLEEP, SFM_MISSING} s
 
 esp_err_t lp_core_start(bool force_restart);
 void lp_core_stop();
-esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean);
+esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean, float *flow_slm_sd);
 
 esp_err_t sfm_init(bool use_lp_core, bool from_sleep, int wake_cause);
 sfm_state sfm_get_state();
