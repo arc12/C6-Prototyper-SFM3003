@@ -5,6 +5,7 @@
 #include "rom/ets_sys.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_sleep.h"
 #include "driver/i2c_master.h"
 #include "c6_prototyper_core.h"
 #include "app_settings.h"
@@ -13,11 +14,12 @@
 #include "sfm3003.h"
 #include "sfm3003_config_report.h"
 
-
 #include "ulp_lp_core.h"
 #include "lp_core_i2c.h"
 #include "lp_core_sfm.h"
-#include "esp_sleep.h"
+#ifdef CONFIG_SFM_LP_CORE_PRINTF
+#include "lp_core_uart.h"
+#endif
 
 #define SFM3003_7BIT_ADDR 0x2D
 
@@ -124,8 +126,15 @@ static void lp_core_init(void){
 
     esp_err_t err = ESP_OK;
 
-    // lp_core_uart_cfg_t uart_cfg = LP_CORE_UART_DEFAULT_CONFIG();
-    // ESP_ERROR_CHECK(lp_core_uart_init(&uart_cfg));
+    #ifdef CONFIG_SFM_LP_CORE_PRINTF
+    lp_core_uart_cfg_t uart_cfg = LP_CORE_UART_DEFAULT_CONFIG();
+    err = lp_core_uart_init(&uart_cfg);
+    if (err == ESP_OK){
+        ESP_LOGW(TAG, "Compiler option to enable LP Core UART is active.");
+    } else {
+        ESP_LOGE(TAG, "Compiler option to enable LP Core UART set but init failed.");
+    }
+    #endif
 
     err = ulp_lp_core_load_binary(lp_core_main_bin_start, (lp_core_main_bin_end - lp_core_main_bin_start));
     if (err != ESP_OK) ESP_LOGE(TAG, "LP Core load failed: %s", esp_err_to_name(err));

@@ -5,7 +5,11 @@
 #include "ulp_lp_core_i2c.h"
 #include "ulp_lp_core_utils.h"
 
-// #include "ulp_lp_core_print.h"
+#include "./sdkconfig.h"
+
+#ifdef CONFIG_SFM_LP_CORE_PRINTF
+#include "ulp_lp_core_print.h"
+#endif
 
 #define SFM3003_7BIT_ADDR 0x2D
 
@@ -17,7 +21,6 @@ volatile uint32_t buffer_ix = 0;  // index to store next value
 volatile uint32_t buffer_valid = 0;  // number of items in the buffer which are good. HP Core may reset this to effectively null-out the buffer elements
 volatile uint32_t last_err = 0;  // de-facto boolean to signal no read error on last wake - actually the esp_err_t value
 volatile uint32_t err_step = 0;  // indicates bail-out position if err
-
 
 const uint8_t cmd_measure[2] = {0x36, 0x08};  // 0x3608 - continuous air
 const uint8_t cmd_idle[2] = {0x3F, 0xF9};
@@ -97,6 +100,10 @@ int main (void)
     }
     buffer_ix = ++buffer_ix % CONFIG_SFM_LP_BUFF_LEN;
     if (buffer_valid < CONFIG_SFM_LP_BUFF_LEN) ++buffer_valid;
+    
+    #ifdef CONFIG_SFM_LP_CORE_PRINTF
+    lp_core_printf("after storing, ix=%u, valid=%u\n", buffer_ix, buffer_valid);
+    #endif
 
     // put SFM3003 to sleep for low current. First need to put into idle mode.
 shutdown:

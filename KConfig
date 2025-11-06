@@ -8,4 +8,10 @@ menu "SFM3003"
         int "Number of slots in LP ring buffers"
         default 32
         range 5 64
+
+    config SFM_LP_CORE_PRINTF
+        bool "Enable printf to HP UART in LP Core for debug."
+        default n
+        help
+            "Requires ULP_HP_UART_CONSOLE_PRINT and HP core not sleeping - use holding jumper without AP/HTTPD"
 endmenu
