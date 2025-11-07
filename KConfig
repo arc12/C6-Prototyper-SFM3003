@@ -3,15 +3,16 @@ menu "SFM3003"
         int "Log level (1=ERR, 2=WARN, 3=INFO, 4=DEBUG). Limited by global LOG_MAXIMUM_LEVEL."
         default 3
         range 1 4
-
     config SFM_LP_BUFF_LEN
         int "Number of slots in LP ring buffers"
         default 32
         range 5 64
-
-    config SFM_LP_CORE_PRINTF
-        bool "Enable printf to HP UART in LP Core for debug."
-        default n
-        help
-            "Requires ULP_HP_UART_CONSOLE_PRINT and HP core not sleeping - use holding jumper without AP/HTTPD"
+    config SFM_LP_PRD_S_DEFAULT
+        int "Default period (s) for LP Core sampling"
+        default 30
+        range 1 300
+    config SFM_LP_SET_SIZE_DEFAULT
+        int "Default set size for mean of LP Core samples"
+        default 9
+        range 4 100
 endmenu

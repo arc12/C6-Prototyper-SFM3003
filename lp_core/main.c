@@ -7,7 +7,7 @@
 
 #include "./sdkconfig.h"
 
-#ifdef CONFIG_SFM_LP_CORE_PRINTF
+#ifdef CONFIG_ULP_HP_UART_CONSOLE_PRINT
 #include "ulp_lp_core_print.h"
 #endif
 
@@ -101,7 +101,7 @@ int main (void)
     buffer_ix = ++buffer_ix % CONFIG_SFM_LP_BUFF_LEN;
     if (buffer_valid < CONFIG_SFM_LP_BUFF_LEN) ++buffer_valid;
     
-    #ifdef CONFIG_SFM_LP_CORE_PRINTF
+    #ifdef CONFIG_ULP_HP_UART_CONSOLE_PRINT
     lp_core_printf("after storing, ix=%u, valid=%u\n", buffer_ix, buffer_valid);
     #endif
 

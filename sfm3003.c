@@ -53,8 +53,8 @@ void sfm3003_load_settings(){
     ESP_LOGD(TAG, "Reading Settings");
     setting_get_float("SFM_OFFSET_TEMP", &temp_offset, 0.0);
     setting_get_float("SFM_OFFSET_SLM", &slm_offset, 0.0);
-    setting_get_uint32("SFM_LP_PRD_S", &lp_interval_s, 30);
-    setting_get_uint16("SFM_LP_SET_SIZE", &lp_set_size, 5);
+    setting_get_uint32("SFM_LP_PRD_S", &lp_interval_s, CONFIG_SFM_LP_PRD_S_DEFAULT);
+    setting_get_uint16("SFM_LP_SET_SIZE", &lp_set_size, CONFIG_SFM_LP_SET_SIZE_DEFAULT);
 }
 
 // fn to get a string version of the local value and the original (aka default) - for web server
@@ -109,8 +109,8 @@ esp_err_t sfm3003_calibration_info(char *formatted, size_t buff_size){
 }
 
 const app_settings_source_t sfm3003_ass = {
-        .source_code="SLM3003",
-        .source_name="SLM3003 Temp and Flow",
+        .source_code="SFM3003",
+        .source_name="SFM3003 Temp and Flow",
         .settings_available_ptr=sfm3003_settings_available,
         .n_settings=SFM3003_N_SETTINGS,
         .settings_get_str_fn=sfm3003_setting_get_str,
@@ -126,7 +126,8 @@ static void lp_core_init(void){
 
     esp_err_t err = ESP_OK;
 
-    #ifdef CONFIG_SFM_LP_CORE_PRINTF
+    // optionally set up the LP UART if the ESP-IDF config is set to route LP Core UART to HP. Only usable if HP core remains on (see "holding" in core component)
+    #ifdef CONFIG_ULP_HP_UART_CONSOLE_PRINT
     lp_core_uart_cfg_t uart_cfg = LP_CORE_UART_DEFAULT_CONFIG();
     err = lp_core_uart_init(&uart_cfg);
     if (err == ESP_OK){
