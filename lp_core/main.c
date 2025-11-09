@@ -14,6 +14,7 @@
 #define SFM3003_7BIT_ADDR 0x2D
 
 // volatile uint32_t loaded_code = 0xADC0;  // a read of this variable from HP core tests for whether the LP Core binary has been loaded
+volatile uint32_t wake_count = 0;  // wake counter. May be used by HP code to decide the LP core should be (re-)loaded if it doens't change.
 volatile uint32_t is_started = 0;  // used by HP core to record whether or not the LP Core is running or stopped, for reference when HP core wakes.
 volatile uint32_t working_flag = 0;  // set to 1 when LP core interacting with SFM3003
 volatile uint32_t raw_buffer[CONFIG_SFM_LP_BUFF_LEN][6];  // holds the bytes from the SFM3003, not converted to temp or flow
@@ -22,14 +23,15 @@ volatile uint32_t buffer_valid = 0;  // number of items in the buffer which are 
 volatile uint32_t last_err = 0;  // de-facto boolean to signal no read error on last wake - actually the esp_err_t value
 volatile uint32_t err_step = 0;  // indicates bail-out position if err
 
-const uint8_t cmd_measure[2] = {0x36, 0x08};  // 0x3608 - continuous air
-const uint8_t cmd_idle[2] = {0x3F, 0xF9};
-const uint8_t sleep_cmd[2] = {0x36, 0x77};
+static const uint8_t cmd_measure[2] = {0x36, 0x08};  // 0x3608 - continuous air
+static const uint8_t cmd_idle[2] = {0x3F, 0xF9};
+static const uint8_t sleep_cmd[2] = {0x36, 0x77};
 
 int main (void)
 {
     // for book-keeping use from HP Core.
     is_started = 1;
+    wake_count++;
 
     // uint8_t data_wr = 0;
     uint8_t data_rd[2];

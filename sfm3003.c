@@ -33,6 +33,7 @@ i2c_master_dev_handle_t sfm_dev_handle;
 static sfm_state state = SFM_MISSING;
 uint64_t sfm_serial_number;
 float start_temp;  // temperature read immediately after entering measurement mode.
+uint32_t last_ulp_wake_count = 0;  // used to check the LP Core is doing something between readings.
 
 esp_err_t temp_from_bytes(uint8_t *raw, float *temp, bool apply_offset);
 esp_err_t flow_from_bytes(uint8_t *raw, float *flow_slm, bool apply_offset);
@@ -226,6 +227,13 @@ void lp_core_stop(){
 // Read un-read raw values in the LP Core SFM buffer, convert to real values and take mean.  SFM_LP_SET_SIZE setting controls number of samples to take mean over.
 // In the event that there are not enough un-read entries in the buffer, or if any are invalid the returned mean value will be set to the "NA" placeholder: FLOAT_NA
 esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean, float *flow_slm_sd){
+    // if the LP Core appears to have been inactive, give it a soft restart, as if POR.
+    // This will occur if the LP Core is enabled in settings without a restart being issued (and having never before been loaded)
+    if (ulp_wake_count != last_ulp_wake_count){
+        ESP_LOGW(TAG, "LP Core appears to be inactive. Attempting soft reload/start.");
+        sfm_init(true, false, 0);
+    }
+    last_ulp_wake_count = ulp_wake_count;
 
     // failure case fallbacks only over-written if all OK
     *temp_mean = FLOAT_NA;
@@ -320,9 +328,9 @@ esp_err_t sfm_init(bool use_lp_core, bool from_sleep, int wake_cause){
     sfm3003_load_settings();
 
     if (use_lp_core){
-        // if either has error then it is already logged and state booleans set to false. Both guard against previous init or start.
+        // if either has error then it is already logged
         if (wake_cause == 0) lp_core_init();
-        lp_core_start(false);
+        lp_core_start(false);  // Guards against previous start. State boolean set to false if fails
 
     } else {
 
@@ -357,13 +365,13 @@ esp_err_t temp_from_bytes(uint8_t *raw, float *temp, bool apply_offset){
     crc_sht40_t crc_calculated = crc_sht40_word(raw);
     if (crc_calculated == raw[2]) {
         *temp = (float)(raw[1] + raw[0] * 256) / 200.0;
+        ESP_LOGD(TAG, "Temp bytes: 0x%02x%02x, CRC: 0x%02x. Result: %.2f", raw[0], raw[1], raw[2], *temp);
         if (apply_offset) *temp += temp_offset;
     } else {
         *temp = FLOAT_NA;
-        ESP_LOGE(TAG, "CRC fail for temp. Expected 0x%02x, got 0x%02x", crc_calculated, raw[2]);
+        ESP_LOGE(TAG, "CRC fail for temp bytes 0x%02x%02x. Expected 0x%02x, got 0x%02x", raw[0], raw[1], crc_calculated, raw[2]);
         err = ESP_FAIL;
     }
-    ESP_LOGD(TAG, "Temp bytes: 0x%02x%02x, CRC: 0x%02x. Result: %.2f", raw[0], raw[1], raw[2], *temp);
     return err;
 }
 
@@ -467,6 +475,8 @@ esp_err_t sfm_to_sleep(){
 
 // use if explicitly put to sleep. default startup mode is idle. includes a delay
 esp_err_t sfm_wake(){
+    
+    ESP_LOGD(TAG, "Waking SFM3003");
     // wake-up requires a valid I2C address with the R/W bit low (write).
     //the doc says wakeup should take about 16ms but it also says the sensor should be polled.
     
