@@ -1,4 +1,4 @@
-menu "SFM3003"    
+menu "SFM3003"
     config SFM3003_LOG_LEVEL
         int "Log level (1=ERR, 2=WARN, 3=INFO, 4=DEBUG). Limited by global LOG_MAXIMUM_LEVEL."
         default 3
