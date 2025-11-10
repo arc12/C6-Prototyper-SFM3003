@@ -6,4 +6,5 @@
 #define CONFIG_LI(Y) "<li>" #Y " = " XSTR(CONFIG_##Y) "</li>\n"
 #endif
 
-const char* sfm3003_config =  "<ul>" CONFIG_LI(SFM3003_LOG_LEVEL) "</ul>\n";
+// ignoring the config which defines the defaults for settings, as this info is already revealed.
+const char* sfm3003_config =  "<ul>" CONFIG_LI(SFM3003_LOG_LEVEL) CONFIG_LI(SFM_LP_BUFF_LEN) "</ul>\n";
