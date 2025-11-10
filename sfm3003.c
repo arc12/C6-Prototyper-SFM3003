@@ -229,11 +229,14 @@ void lp_core_stop(){
 // Read un-read raw values in the LP Core SFM buffer, convert to real values and take mean.  SFM_LP_SET_SIZE setting controls number of samples to take mean over.
 // In the event that there are not enough un-read entries in the buffer, or if any are invalid the returned mean value will be set to the "NA" placeholder: FLOAT_NA
 esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean, float *flow_slm_sd){
-    // if the LP Core appears to have been inactive, give it a soft restart, as if POR.
+    // if the LP Core appears to have not been loaded or to be inactive, give it a soft restart, as if POR.
     // This will occur if the LP Core is enabled in settings without a restart being issued (and having never before been loaded)
-    if (ulp_wake_count != last_ulp_wake_count){
+    // First clause should catch case when settings first enable the LP Core but it is not yet loaded.
+    if ((ulp_buffer_ix >= CONFIG_SFM_LP_BUFF_LEN) || (ulp_wake_count == last_ulp_wake_count)){
         ESP_LOGW(TAG, "LP Core appears to be inactive. Attempting soft reload/start.");
+        last_ulp_wake_count = ulp_wake_count;
         sfm_init(true, false, 0);
+        return ESP_ERR_NOT_FOUND;
     }
     last_ulp_wake_count = ulp_wake_count;
 
@@ -282,7 +285,7 @@ esp_err_t lp_core_readings(float * temp_mean, float * flow_slm_mean, float *flow
     *flow_slm_sd = sqrt(flow_slm_dev_sum / lp_set_size);
     ulp_buffer_valid = 0;  // prevent used readings being re-used
 
-    ESP_LOGD(TAG, "Means: %.2fslm, %.2fC, SD: %.2fslm", *flow_slm_mean, *temp_mean, *flow_slm_sd);
+    ESP_LOGD(TAG, "Means: %.2fslm, %.2fC, SD: %.3fslm", *flow_slm_mean, *temp_mean, *flow_slm_sd);
 
     return ESP_OK;
 }
@@ -332,7 +335,7 @@ esp_err_t sfm_init(bool use_lp_core, bool from_sleep, int wake_cause){
     if (use_lp_core){
         // if either has error then it is already logged
         if (wake_cause == 0) lp_core_init();
-        lp_core_start(false);  // Guards against previous start. State boolean set to false if fails
+        lp_core_start(wake_cause == 0);  // Guards against previous start. State boolean set to false if fails
 
     } else {
 
