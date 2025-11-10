@@ -56,6 +56,8 @@ void sfm3003_load_settings(){
     setting_get_float("SFM_OFFSET_SLM", &slm_offset, 0.0);
     setting_get_uint32("SFM_LP_PRD_S", &lp_interval_s, CONFIG_SFM_LP_PRD_S_DEFAULT);
     setting_get_uint16("SFM_LP_SET_SIZE", &lp_set_size, CONFIG_SFM_LP_SET_SIZE_DEFAULT);
+    
+    if (lp_set_size > CONFIG_SFM_LP_BUFF_LEN) lp_set_size = CONFIG_SFM_LP_BUFF_LEN;
 }
 
 // fn to get a string version of the local value and the original (aka default) - for web server
